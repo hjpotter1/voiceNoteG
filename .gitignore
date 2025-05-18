@@ -1,0 +1,52 @@
+# オペレーティングシステムファイル
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# エディタファイル
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ログファイル
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# パッケージファイル
+*.zip
+*.crx
+*.pem
+
+# 一時ファイル
+tmp/
+temp/
+.tmp/
+
+# 依存ディレクトリ
+node_modules/
+bower_components/
+
+# ビルド出力
+dist/
+build/
+out/
+
+# ローカル開発設定
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# アイコンソースファイル
+*.psd
+*.ai
+*.sketch
+
+# その他
+*.bak
+*.swp
+*~

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 250px;
+      padding: 10px;
+      font-family: Arial, sans-serif;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      background-color: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    button:hover {
+      background-color: #185abc;
+    }
+    .status {
+      margin-bottom: 10px;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .info {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 10px;
+    }
+    .separator {
+      height: 1px;
+      background-color: #ddd;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="status">Google Meet 字幕抽出</div>
+  <div class="info">会議の字幕をリアルタイムで表示・保存します</div>
+
+  <button id="toggleBtn">字幕表示を切り替え</button>
+  <button id="exportBtn">字幕をエクスポート</button>
+
+  <div class="separator"></div>
+  <div class="info">バージョン: 2.0</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
