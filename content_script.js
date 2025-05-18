@@ -4,10 +4,14 @@ let lastCaptionText = ''; // 最後に捕捉した字幕を保存
 let observersActive = false; // 監視が有効かどうか
 let panelCreated = false; // パネルが作成されたかどうか
 let captionVisible = true; // 字幕表示の状態
+let lastSpeaker = ''; // 最後の発言者
+let currentSentence = ''; // 現在の文章
+let lastTimestamp = ''; // 最後のタイムスタンプ
+let captionElements = {}; // 字幕要素を保存するオブジェクト
 
 // メイン初期化関数
 function init() {
-  console.log('Google Meet 字幕抽出プラグイン v2.0 が起動しました');
+  console.log('Google Meet 字幕抽出プラグイン v2.2 が起動しました');
 
   // 表示状態を取得
   chrome.storage.local.get(['captionVisible'], (result) => {
@@ -106,6 +110,11 @@ function createCaptionPanel() {
   `;
   panel.appendChild(title);
 
+  // 字幕コンテナを追加
+  const captionsContainer = document.createElement('div');
+  captionsContainer.id = 'gm-captions-container';
+  panel.appendChild(captionsContainer);
+
   return panel;
 }
 
@@ -127,7 +136,17 @@ function listenToCustomEvents() {
     console.log('字幕イベントを検出しました:', event.detail);
 
     if (event.detail && event.detail.text) {
-      addCaption(event.detail.text);
+      // 発言者情報を抽出（可能であれば）
+      let speaker = '';
+      if (event.detail.deviceId) {
+        speaker = event.detail.deviceId.split('/').pop();
+      }
+
+      // メッセージIDがあれば、それを使用して更新か新規かを判断
+      const messageId = event.detail.messageId || '';
+      const text = cleanCaptionText(event.detail.text);
+
+      processCaption(text, speaker, messageId);
     }
   });
 
@@ -188,24 +207,65 @@ function startLightweightCaptionDetection() {
 function observeCaptionsLightweight(container) {
   console.log('字幕コンテナの監視を開始します');
 
+  // 前回の内容を記録
+  let previousText = '';
+  let sentenceEndDetected = false;
+  let silenceTimer = null;
+
   // 字幕テキストを定期的に確認
   const checkTextInterval = setInterval(() => {
     if (container && container.textContent) {
-      const text = container.textContent.trim();
-      if (text && text.length > 0 && text !== lastCaptionText) {
-        addCaption(text);
+      const text = cleanCaptionText(container.textContent.trim());
+
+      // 内容が変わった場合のみ処理
+      if (text && text.length > 0 && text !== previousText) {
+        // 発言者情報を取得（可能であれば）
+        let speaker = '';
+        const speakerEl = container.querySelector('.zs7s8d');
+        if (speakerEl) {
+          speaker = speakerEl.textContent.trim();
+        }
+
+        // 前回の内容と比較して、文章が完了したかどうかを判断
+        if (isSentenceComplete(previousText, text)) {
+          sentenceEndDetected = true;
+          processCaption(previousText, speaker, '', true);
+
+          // 少し待ってから新しい文章を処理
+          setTimeout(() => {
+            processCaption(text, speaker, '', false);
+            sentenceEndDetected = false;
+          }, 100);
+        } else {
+          // 文章が続いている場合
+          if (!sentenceEndDetected) {
+            processCaption(text, speaker, '', false);
+          }
+        }
+
+        previousText = text;
+
+        // 無音検出タイマーをリセット
+        if (silenceTimer) {
+          clearTimeout(silenceTimer);
+        }
+
+        // 2秒間変化がなければ文章が完了したと見なす
+        silenceTimer = setTimeout(() => {
+          if (text && !sentenceEndDetected) {
+            processCaption(text, speaker, '', true);
+            sentenceEndDetected = true;
+          }
+        }, 2000);
       }
     }
-  }, 1000); // 1秒ごとに確認
+  }, 500); // 0.5秒ごとに確認
 
   // バックアップとしてMutationObserverも使用
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       if (mutation.type === 'childList' || mutation.type === 'characterData') {
-        const text = container.textContent.trim();
-        if (text && text.length > 0 && text !== lastCaptionText) {
-          addCaption(text);
-        }
+        // MutationObserverは頻繁に発火するので、タイマーベースの処理に任せる
       }
     }
   });
@@ -218,48 +278,180 @@ function observeCaptionsLightweight(container) {
   });
 }
 
-// 字幕をパネルと保存領域に追加
-function addCaption(text) {
+// 文章が完了したかどうかを判断
+function isSentenceComplete(prevText, currentText) {
+  // 前の文章がない場合
+  if (!prevText) return false;
+
+  // 長さが短くなった場合（新しい文章が始まった可能性）
+  if (currentText.length < prevText.length) return true;
+
+  // 句読点で終わる場合
+  if (prevText.match(/[。．.?？!！]$/)) return true;
+
+  // 前の文章が現在の文章に含まれていない場合（完全に異なる文章）
+  if (!currentText.includes(prevText)) return true;
+
+  return false;
+}
+
+// 字幕テキストをクリーニング
+function cleanCaptionText(text) {
+  if (!text) return '';
+
+  // 特殊な記号や不要なテキストを削除
+  return text
+    .replace(/arrow_downward/g, '')
+    .replace(/arrow_forward/g, '')
+    .replace(/一番下に移動/g, '')
+    .replace(/一番下/g, '')
+    .replace(/一番下に/g, '')
+    .replace(/移動/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 字幕を処理
+function processCaption(text, speaker, messageId = '', isFinal = false) {
   // パネルが存在しない場合は作成
   if (!panelCreated) {
     createCaptionPanel();
     updatePanelVisibility();
   }
 
-  // 重複チェック
-  if (text === lastCaptionText) {
+  // テキストをクリーニング
+  text = cleanCaptionText(text);
+  if (!text) return;
+
+  const timestamp = new Date().toLocaleTimeString();
+  const captionId = messageId || `caption-${Date.now()}`;
+
+  // 発言者情報を整形
+  let speakerInfo = '';
+  if (speaker) {
+    speakerInfo = speaker;
+
+    // 発言者が変わった場合は新しい発言として扱う
+    if (lastSpeaker && lastSpeaker !== speaker) {
+      isFinal = true;
+    }
+
+    lastSpeaker = speaker;
+  }
+
+  // 既存の要素を更新するか、新しい要素を作成するか
+  if (captionElements[captionId] && !isFinal) {
+    // 既存の要素を更新
+    updateCaptionElement(captionId, text, timestamp);
+  } else {
+    // 新しい要素を作成
+    if (isFinal && currentSentence) {
+      // 最終的な文章を保存
+      saveFinalCaption(currentSentence, speakerInfo, lastTimestamp || timestamp);
+      currentSentence = '';
+    }
+
+    // 新しい文章を開始
+    createCaptionElement(captionId, text, speakerInfo, timestamp);
+    currentSentence = text;
+    lastTimestamp = timestamp;
+  }
+}
+
+// 字幕要素を更新
+function updateCaptionElement(id, text, timestamp) {
+  const element = captionElements[id];
+  if (!element) return;
+
+  // テキスト部分を更新
+  const textElement = element.querySelector('.gm-caption-text');
+  if (textElement) {
+    textElement.textContent = text;
+    currentSentence = text;
+  }
+}
+
+// 新しい字幕要素を作成
+function createCaptionElement(id, text, speaker, timestamp) {
+  // コンテナを取得
+  const container = document.getElementById('gm-captions-container');
+  if (!container) {
+    console.error('字幕コンテナが見つかりません');
     return;
   }
 
-  lastCaptionText = text;
-  const timestamp = new Date().toLocaleTimeString();
-  const captionText = `[${timestamp}] ${text}`;
+  // 新しい字幕要素を作成
+  const captionElement = document.createElement('div');
+  captionElement.className = 'gm-caption-item';
+  captionElement.dataset.id = id;
+  captionElement.style = `
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px dotted #444;
+  `;
 
-  console.log('新しい字幕を捕捉:', captionText.substring(0, 50) + (captionText.length > 50 ? '...' : ''));
+  // タイムスタンプ要素
+  const timestampElement = document.createElement('div');
+  timestampElement.className = 'gm-caption-timestamp';
+  timestampElement.textContent = `[${timestamp}]`;
+  timestampElement.style = `
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 3px;
+  `;
+  captionElement.appendChild(timestampElement);
+
+  // 発言者要素（存在する場合）
+  if (speaker) {
+    const speakerElement = document.createElement('span');
+    speakerElement.className = 'gm-caption-speaker';
+    speakerElement.textContent = speaker + ': ';
+    speakerElement.style = `
+      font-weight: bold;
+      color: #4285f4;
+    `;
+
+    // テキスト要素
+    const textElement = document.createElement('span');
+    textElement.className = 'gm-caption-text';
+    textElement.textContent = text;
+
+    // 内容要素
+    const contentElement = document.createElement('div');
+    contentElement.className = 'gm-caption-content';
+    contentElement.appendChild(speakerElement);
+    contentElement.appendChild(textElement);
+
+    captionElement.appendChild(contentElement);
+  } else {
+    // 発言者がない場合は直接テキストを追加
+    const textElement = document.createElement('div');
+    textElement.className = 'gm-caption-text';
+    textElement.textContent = text;
+    captionElement.appendChild(textElement);
+  }
+
+  // コンテナに追加
+  container.appendChild(captionElement);
+
+  // 要素を保存
+  captionElements[id] = captionElement;
+
+  // 自動的に下部にスクロール
+  const panel = document.getElementById('gm-caption-panel');
+  if (panel) {
+    panel.scrollTop = panel.scrollHeight;
+  }
+}
+
+// 最終的な字幕を保存
+function saveFinalCaption(text, speaker, timestamp) {
+  // 保存用のテキスト
+  const captionText = `[${timestamp}] ${speaker ? speaker + ': ' : ''}${text}`;
 
   // 保存領域に追加
   capturedCaptions.push(captionText);
-
-  // パネルを取得
-  const panel = document.getElementById('gm-caption-panel');
-  if (!panel) {
-    console.error('字幕パネルが見つかりません');
-    return;
-  }
-
-  // 新しい字幕行を作成
-  const captionLine = document.createElement('div');
-  captionLine.textContent = captionText;
-  captionLine.style.marginBottom = '8px';
-  captionLine.style.whiteSpace = 'pre-wrap';
-  captionLine.style.borderBottom = '1px dotted #444';
-  captionLine.style.paddingBottom = '5px';
-
-  // パネルに追加
-  panel.appendChild(captionLine);
-
-  // 自動的に下部にスクロール
-  panel.scrollTop = panel.scrollHeight;
+  console.log('字幕を保存しました:', captionText);
 }
 
 // 字幕をテキストファイルとしてエクスポート
@@ -286,6 +478,11 @@ function exportCaptions() {
 function setupMessageListener() {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'export_captions') {
+      // 現在処理中の文章があれば、それも保存
+      if (currentSentence) {
+        saveFinalCaption(currentSentence, lastSpeaker, lastTimestamp || new Date().toLocaleTimeString());
+      }
+
       exportCaptions();
       sendResponse({ success: true });
     }
