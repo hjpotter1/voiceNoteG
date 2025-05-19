@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Google Meet 字幕抽出",
-  "version": "1.0",
+  "version": "2.6",
   "description": "Google Meetの字幕をリアルタイムで抽出し、表示とエクスポート機能を提供",
   "icons": {
     "128": "icon.png"

@@ -31,32 +31,6 @@ function init() {
   listenToCustomEvents();
 }
 
-// 会議が開始されるまで待機
-function waitForMeetingToStart() {
-  console.log('会議の開始を待機しています...');
-
-  // 会議が開始されたかどうかを確認するための要素
-  const checkInterval = setInterval(() => {
-    // 会議が開始されたことを示す要素を探す
-    const meetingStartedElements = [
-      document.querySelector('.zWfAib'), // 参加者リストボタン
-      document.querySelector('.NzPR9b'), // チャットボタン
-      document.querySelector('.AGbzme') // 会議コントロールバー
-    ];
-
-    // いずれかの要素が存在すれば会議が開始されたと判断
-    if (meetingStartedElements.some(el => el !== null)) {
-      console.log('会議が開始されました。プラグイン機能を初期化します。');
-      clearInterval(checkInterval);
-
-      // 少し遅延させてから初期化（会議UIが完全に読み込まれるのを待つ）
-      setTimeout(() => {
-        initializePluginFeatures();
-      }, 3000);
-    }
-  }, 2000); // 2秒ごとに確認
-}
-
 // プラグイン機能を初期化
 function initializePluginFeatures() {
   // フローティングウィンドウを作成
@@ -165,13 +139,7 @@ function startLightweightCaptionDetection() {
 
   // 一般的な字幕コンテナのセレクタ
   const captionSelectors = [
-    'div[role="region"][aria-label="字幕"]',
-    'div[role="region"][aria-label="Captions"]',
-    'div[role="region"][aria-label="Subtitles"]',
-    'div[role="region"][aria-label="Caption"]',
-    'div[role="region"][aria-label="Live Caption"]',
-    '.a4cQT',
-    '.CNusmb'
+    'div[role="region"][aria-label="字幕"]'
   ];
 
   // 定期的に字幕要素を確認
