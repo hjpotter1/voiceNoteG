@@ -26,10 +26,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // コンテンツスクリプトに通知
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs || tabs.length === 0) return;
         chrome.tabs.sendMessage(
           tabs[0].id,
           { action: 'toggle_caption_visibility', visible: newState },
           (response) => {
+            if (chrome.runtime.lastError) {
+              console.warn('送信失敗:', chrome.runtime.lastError.message);
+              return;
+            }
             console.log('表示状態を変更:', newState, response);
           }
         );
@@ -41,10 +46,18 @@ document.addEventListener('DOMContentLoaded', () => {
   exportBtn.addEventListener('click', () => {
     // コンテンツスクリプトにエクスポート指示を送信
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs || tabs.length === 0) return;
       chrome.tabs.sendMessage(
         tabs[0].id,
         { action: 'export_captions' },
         (response) => {
+          if (chrome.runtime.lastError) {
+            exportBtn.textContent = 'Meet画面を開いてください';
+            setTimeout(() => {
+              exportBtn.textContent = '字幕を手動エクスポート';
+            }, 2000);
+            return;
+          }
           if (response && response.success) {
             exportBtn.textContent = 'エクスポート成功!';
             setTimeout(() => {

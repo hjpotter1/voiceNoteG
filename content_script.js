@@ -25,10 +25,18 @@ let captionVisible = true;
 function init() {
   console.log('Google Meet 字幕抽出プラグイン v3.0 が起動しました');
 
-  chrome.storage.local.get(['captionVisible', 'panelCollapsed'], (result) => {
+  chrome.storage.local.get(['captionVisible', 'panelCollapsed', 'pendingCaptions'], (result) => {
     captionVisible = result.captionVisible !== false;
     panelCollapsed = result.panelCollapsed === true;
     createCaptionPanel();
+
+    // 前回未エクスポートのデータがあれば自動ダウンロード
+    if (result.pendingCaptions && result.pendingCaptions.length > 0) {
+      capturedCaptions = result.pendingCaptions;
+      exportCaptions();
+      chrome.storage.local.remove('pendingCaptions');
+      capturedCaptions.forEach(cap => addCaptionToPanel(cap));
+    }
   });
 
   setupMessageListener();
@@ -92,6 +100,7 @@ function monitorCaptions() {
     if (prevSpeakerCount > 0 && prevSpeakerCount !== speakers.length && currentCaption.text) {
       capturedCaptions.push(currentCaption);
       addCaptionToPanel(currentCaption);
+      savePendingCaptions();
     }
 
     // 現在の字幕バッファを更新
@@ -130,8 +139,16 @@ function endCaptionLoggingAndSave() {
 
 // --- タブを閉じる際の保存 ---
 window.addEventListener('beforeunload', () => {
-  if (!isCaptionsSaved && currentCaption.text) {
-    endCaptionLoggingAndSave();
+  if (!isCaptionsSaved) {
+    // currentCaption バッファに未確定データがあれば追加
+    if (currentCaption.text) {
+      capturedCaptions.push(currentCaption);
+    }
+    // beforeunload では a.click() が不安定なため、storage に保存のみ行う
+    // 次回 Meet を開いた時に自動ダウンロードされる
+    if (capturedCaptions.length > 0) {
+      savePendingCaptions();
+    }
   }
 });
 
@@ -291,6 +308,15 @@ function updatePanelVisibility() {
   if (panel) panel.style.display = captionVisible ? 'block' : 'none';
 }
 
+// --- Storage 持久化 ---
+function savePendingCaptions() {
+  chrome.storage.local.set({ pendingCaptions: capturedCaptions });
+}
+
+function clearPendingCaptions() {
+  chrome.storage.local.remove('pendingCaptions');
+}
+
 // --- エクスポート ---
 function exportCaptions() {
   if (capturedCaptions.length === 0) return;
@@ -307,6 +333,7 @@ function exportCaptions() {
   a.click();
 
   setTimeout(() => URL.revokeObjectURL(url), 100);
+  clearPendingCaptions();
 }
 
 // --- メッセージリスナー ---
