@@ -50,3 +50,5 @@ out/
 *.bak
 *.swp
 *~
+CLAUDE.md
+.claude/

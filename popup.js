@@ -48,7 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (response && response.success) {
             exportBtn.textContent = 'エクスポート成功!';
             setTimeout(() => {
-              exportBtn.textContent = '字幕をエクスポート';
+              exportBtn.textContent = '字幕を手動エクスポート';
             }, 1500);
           }
         }

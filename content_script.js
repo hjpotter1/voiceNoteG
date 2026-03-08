@@ -1,436 +1,304 @@
-// 字幕を保存
+// Google Meet 字幕抽出プラグイン v3.0
+
+// --- セレクタ定義（Google Meet UI 変更時にここだけ更新） ---
+const SELECTORS = {
+  captionItem: '.nMcdL.bj4p3b',
+  speaker: '.adE6rb',
+  captionText: '.ygicle.VbkSUe',
+  captionButton: 'button[jsname="r8qRAd"]',
+  captionContainer: '[jscontroller="D1tHje"]',
+  endCallButton: 'button.Iootmd.vLQezd',
+};
+
+const MEET_URL_PATTERN = /https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/;
+
+// --- 状態変数 ---
 let capturedCaptions = [];
-let lastCaptionText = ''; // 最後に捕捉した字幕を保存
-let observersActive = false; // 監視が有効かどうか
-let panelCreated = false; // パネルが作成されたかどうか
-let captionVisible = true; // 字幕表示の状態
-let lastSpeaker = ''; // 最後の発言者
-let currentSentence = ''; // 現在の文章
-let lastTimestamp = ''; // 最後のタイムスタンプ
-let captionElements = {}; // 字幕要素を保存するオブジェクト
+let currentCaption = {};
+let prevSpeakerCount = 0;
+let isCaptionsSaved = true;
+let panelCreated = false;
+let panelCollapsed = false;
+let captionVisible = true;
 
-// メイン初期化関数
+// --- 初期化 ---
 function init() {
-  console.log('Google Meet 字幕抽出プラグイン v2.2 が起動しました');
+  console.log('Google Meet 字幕抽出プラグイン v3.0 が起動しました');
 
-  // 表示状態を取得
-  chrome.storage.local.get(['captionVisible'], (result) => {
-    captionVisible = result.captionVisible !== false; // デフォルトは表示
-
-    // パネルを作成
+  chrome.storage.local.get(['captionVisible', 'panelCollapsed'], (result) => {
+    captionVisible = result.captionVisible !== false;
+    panelCollapsed = result.panelCollapsed === true;
     createCaptionPanel();
-
-    // 表示状態を適用
-    updatePanelVisibility();
   });
 
-  // メッセージリスナーを設定
   setupMessageListener();
-
-  // カスタムイベントを監視
-  listenToCustomEvents();
+  startGlobalObserver();
 }
 
-// プラグイン機能を初期化
-function initializePluginFeatures() {
-  // フローティングウィンドウを作成
-  createCaptionPanel();
+// --- グローバル MutationObserver（200ms デバウンス） ---
+let debounceTimer;
 
-  // メッセージリスナーを設定
-  setupMessageListener();
-
-  // 字幕の検出を開始（軽量版）
-  startLightweightCaptionDetection();
+function startGlobalObserver() {
+  const observer = new MutationObserver(() => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(handleCaptionState, 200);
+  });
+  observer.observe(document, { childList: true, attributes: true, subtree: true });
 }
 
-// 字幕表示パネルを作成
-function createCaptionPanel() {
-  // 既に作成済みの場合は何もしない
-  if (panelCreated) return;
-
-  const panel = document.createElement('div');
-  panel.id = 'gm-caption-panel';
-
-  // スタイル設定
-  panel.style = `
-    position: fixed;
-    bottom: 100px;
-    right: 20px;
-    width: 400px;
-    max-height: 300px;
-    overflow-y: auto;
-    background: rgba(34, 34, 34, 0.9);
-    color: #fff;
-    font-size: 14px;
-    padding: 10px;
-    z-index: 9999;
-    border-radius: 8px;
-    box-shadow: 0 0 8px rgba(0,0,0,0.3);
-    font-family: Arial, sans-serif;
-  `;
-
-  document.body.appendChild(panel);
-  panelCreated = true;
-  console.log('字幕パネルを作成しました');
-
-  // タイトルを追加
-  const title = document.createElement('div');
-  title.textContent = 'Google Meet 字幕';
-  title.style = `
-    font-weight: bold;
-    margin-bottom: 10px;
-    padding-bottom: 5px;
-    border-bottom: 1px solid #555;
-  `;
-  panel.appendChild(title);
-
-  // 字幕コンテナを追加
-  const captionsContainer = document.createElement('div');
-  captionsContainer.id = 'gm-captions-container';
-  panel.appendChild(captionsContainer);
-
-  return panel;
+// --- 字幕状態の処理（200ms ごとに呼ばれる） ---
+function handleCaptionState() {
+  autoEnableCaptions();
+  monitorEndCallButton();
+  monitorCaptions();
 }
 
-// パネルの表示状態を更新
-function updatePanelVisibility() {
-  const panel = document.getElementById('gm-caption-panel');
-  if (panel) {
-    panel.style.display = captionVisible ? 'block' : 'none';
-    console.log('字幕パネルの表示状態を更新:', captionVisible ? '表示' : '非表示');
+// --- 字幕の自動オン ---
+function autoEnableCaptions() {
+  const container = document.querySelector(SELECTORS.captionContainer);
+  if (container && container.children.length === 0) {
+    const btn = document.querySelector(SELECTORS.captionButton);
+    if (btn && !container.classList.contains('gm-auto-clicked')) {
+      container.classList.add('gm-auto-clicked');
+      btn.click();
+    }
   }
 }
 
-// カスタムイベントを監視
-function listenToCustomEvents() {
-  console.log('カスタムイベントの監視を開始します');
-
-  // mxcc-transcript イベントを監視
-  document.addEventListener('mxcc-transcript', (event) => {
-    console.log('字幕イベントを検出しました:', event.detail);
-
-    if (event.detail && event.detail.text) {
-      // 発言者情報を抽出（可能であれば）
-      let speaker = '';
-      if (event.detail.deviceId) {
-        speaker = event.detail.deviceId.split('/').pop();
-      }
-
-      // メッセージIDがあれば、それを使用して更新か新規かを判断
-      const messageId = event.detail.messageId || '';
-      const text = cleanCaptionText(event.detail.text);
-
-      processCaption(text, speaker, messageId);
-    }
-  });
-
-  // バックアップとして通常の字幕検出も開始
-  setTimeout(() => {
-    startLightweightCaptionDetection();
-  }, 5000);
+// --- 通話終了ボタンの監視 ---
+function monitorEndCallButton() {
+  const btn = document.querySelector(SELECTORS.endCallButton);
+  if (btn && !btn.dataset.gmCaptionListener) {
+    btn.addEventListener('click', () => endCaptionLoggingAndSave());
+    btn.dataset.gmCaptionListener = 'true';
+  }
 }
 
-// 軽量版の字幕検出を開始
-function startLightweightCaptionDetection() {
-  if (observersActive) return; // 既に監視中なら何もしない
+// --- 字幕の監視（コア: speakers 数の変化で確定） ---
+function monitorCaptions() {
+  const captionItems = document.querySelectorAll(SELECTORS.captionItem);
+  const speakers = document.querySelectorAll(SELECTORS.speaker);
 
-  observersActive = true;
-  console.log('軽量版の字幕検出を開始します');
+  if (captionItems.length > 0 && speakers.length > 0) {
+    isCaptionsSaved = false;
 
-  // 一般的な字幕コンテナのセレクタ
-  const captionSelectors = [
-    'div[role="region"][aria-label="字幕"]'
-  ];
+    // 最後の発言者とテキストを取得
+    const speakerText = speakers[speakers.length - 1]?.textContent?.trim() || '';
+    const textEl = captionItems[captionItems.length - 1]?.querySelector(SELECTORS.captionText);
+    const captionText = cleanCaptionText(textEl?.textContent || '');
+    if (!captionText) return;
 
-  // 定期的に字幕要素を確認
-  const checkCaptionsInterval = setInterval(() => {
-    let captionContainer = null;
-
-    // セレクタを試す
-    for (const selector of captionSelectors) {
-      const container = document.querySelector(selector);
-      if (container) {
-        captionContainer = container;
-        break;
-      }
+    // 発言者数が変わった → 前の字幕を確定
+    if (prevSpeakerCount > 0 && prevSpeakerCount !== speakers.length && currentCaption.text) {
+      capturedCaptions.push(currentCaption);
+      addCaptionToPanel(currentCaption);
     }
 
-    // 字幕コンテナが見つかった場合
-    if (captionContainer) {
-      console.log('字幕コンテナを検出しました:', captionContainer);
-      clearInterval(checkCaptionsInterval);
+    // 現在の字幕バッファを更新
+    currentCaption = {
+      time: formatTime(),
+      speaker: speakerText,
+      text: captionText,
+    };
 
-      // 監視を開始
-      observeCaptionsLightweight(captionContainer);
+    prevSpeakerCount = speakers.length;
+    updateRecordingIndicator(true);
+  } else {
+    // 字幕が消えた → 全て保存
+    if (!isCaptionsSaved && currentCaption.text) {
+      endCaptionLoggingAndSave();
     }
-  }, 3000); // 3秒ごとに確認
-
-  // 5分後に自動的に監視を停止（リソース節約のため）
-  setTimeout(() => {
-    clearInterval(checkCaptionsInterval);
-  }, 5 * 60 * 1000);
+    updateRecordingIndicator(false);
+  }
 }
 
-// 軽量版の字幕監視
-function observeCaptionsLightweight(container) {
-  console.log('字幕コンテナの監視を開始します');
+// --- 保存して終了 ---
+function endCaptionLoggingAndSave() {
+  if (isCaptionsSaved) return;
 
-  // 前回の内容を記録
-  let previousText = '';
-  let sentenceEndDetected = false;
-  let silenceTimer = null;
+  if (currentCaption.text) {
+    capturedCaptions.push(currentCaption);
+    addCaptionToPanel(currentCaption);
+  }
 
-  // 字幕テキストを定期的に確認
-  const checkTextInterval = setInterval(() => {
-    if (container && container.textContent) {
-      const text = cleanCaptionText(container.textContent.trim());
+  exportCaptions();
 
-      // 内容が変わった場合のみ処理
-      if (text && text.length > 0 && text !== previousText) {
-        // 発言者情報を取得（可能であれば）
-        let speaker = '';
-        const speakerEl = container.querySelector('.zs7s8d');
-        if (speakerEl) {
-          speaker = speakerEl.textContent.trim();
-        }
-
-        // 前回の内容と比較して、文章が完了したかどうかを判断
-        if (isSentenceComplete(previousText, text)) {
-          sentenceEndDetected = true;
-          processCaption(previousText, speaker, '', true);
-
-          // 少し待ってから新しい文章を処理
-          setTimeout(() => {
-            processCaption(text, speaker, '', false);
-            sentenceEndDetected = false;
-          }, 100);
-        } else {
-          // 文章が続いている場合
-          if (!sentenceEndDetected) {
-            processCaption(text, speaker, '', false);
-          }
-        }
-
-        previousText = text;
-
-        // 無音検出タイマーをリセット
-        if (silenceTimer) {
-          clearTimeout(silenceTimer);
-        }
-
-        // 2秒間変化がなければ文章が完了したと見なす
-        silenceTimer = setTimeout(() => {
-          if (text && !sentenceEndDetected) {
-            processCaption(text, speaker, '', true);
-            sentenceEndDetected = true;
-          }
-        }, 2000);
-      }
-    }
-  }, 500); // 0.5秒ごとに確認
-
-  // バックアップとしてMutationObserverも使用
-  const observer = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      if (mutation.type === 'childList' || mutation.type === 'characterData') {
-        // MutationObserverは頻繁に発火するので、タイマーベースの処理に任せる
-      }
-    }
-  });
-
-  // 監視を開始（軽量設定）
-  observer.observe(container, {
-    childList: true,
-    characterData: true,
-    subtree: true
-  });
+  isCaptionsSaved = true;
+  prevSpeakerCount = 0;
+  currentCaption = {};
 }
 
-// 文章が完了したかどうかを判断
-function isSentenceComplete(prevText, currentText) {
-  // 前の文章がない場合
-  if (!prevText) return false;
+// --- タブを閉じる際の保存 ---
+window.addEventListener('beforeunload', () => {
+  if (!isCaptionsSaved && currentCaption.text) {
+    endCaptionLoggingAndSave();
+  }
+});
 
-  // 長さが短くなった場合（新しい文章が始まった可能性）
-  if (currentText.length < prevText.length) return true;
-
-  // 句読点で終わる場合
-  if (prevText.match(/[。．.?？!！]$/)) return true;
-
-  // 前の文章が現在の文章に含まれていない場合（完全に異なる文章）
-  if (!currentText.includes(prevText)) return true;
-
-  return false;
-}
-
-// 字幕テキストをクリーニング
+// --- テキストクリーニング ---
 function cleanCaptionText(text) {
   if (!text) return '';
-
-  // 特殊な記号や不要なテキストを削除
   return text
     .replace(/arrow_downward/g, '')
     .replace(/arrow_forward/g, '')
+    .replace(/arrow_upward/g, '')
     .replace(/一番下に移動/g, '')
     .replace(/一番下/g, '')
-    .replace(/一番下に/g, '')
-    .replace(/移動/g, '')
+    .replace(/Jump to the bottom/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-// 字幕を処理
-function processCaption(text, speaker, messageId = '', isFinal = false) {
-  // パネルが存在しない場合は作成
-  if (!panelCreated) {
-    createCaptionPanel();
-    updatePanelVisibility();
-  }
+// --- フローティングパネル ---
+function createCaptionPanel() {
+  if (panelCreated) return;
 
-  // テキストをクリーニング
-  text = cleanCaptionText(text);
-  if (!text) return;
-
-  const timestamp = new Date().toLocaleTimeString();
-  const captionId = messageId || `caption-${Date.now()}`;
-
-  // 発言者情報を整形
-  let speakerInfo = '';
-  if (speaker) {
-    speakerInfo = speaker;
-
-    // 発言者が変わった場合は新しい発言として扱う
-    if (lastSpeaker && lastSpeaker !== speaker) {
-      isFinal = true;
+  // 録音インジケーター用のアニメーション
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes gm-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
     }
+  `;
+  document.head.appendChild(style);
 
-    lastSpeaker = speaker;
-  }
+  const panel = document.createElement('div');
+  panel.id = 'gm-caption-panel';
+  panel.style.cssText = `
+    position: fixed;
+    bottom: 100px;
+    right: 20px;
+    width: 400px;
+    background: rgba(34, 34, 34, 0.95);
+    color: #fff;
+    font-size: 14px;
+    z-index: 9999;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+    font-family: Arial, sans-serif;
+    display: ${captionVisible ? 'block' : 'none'};
+  `;
 
-  // 既存の要素を更新するか、新しい要素を作成するか
-  if (captionElements[captionId] && !isFinal) {
-    // 既存の要素を更新
-    updateCaptionElement(captionId, text, timestamp);
-  } else {
-    // 新しい要素を作成
-    if (isFinal && currentSentence) {
-      // 最終的な文章を保存
-      saveFinalCaption(currentSentence, speakerInfo, lastTimestamp || timestamp);
-      currentSentence = '';
-    }
+  // ヘッダー
+  const header = document.createElement('div');
+  header.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid #555;
+    cursor: pointer;
+    user-select: none;
+  `;
 
-    // 新しい文章を開始
-    createCaptionElement(captionId, text, speakerInfo, timestamp);
-    currentSentence = text;
-    lastTimestamp = timestamp;
-  }
+  const titleArea = document.createElement('div');
+  titleArea.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+
+  const indicator = document.createElement('span');
+  indicator.id = 'gm-record-indicator';
+  indicator.style.cssText = `
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #666; display: inline-block;
+  `;
+
+  const title = document.createElement('span');
+  title.textContent = '字幕ログ';
+  title.style.cssText = 'font-weight: bold; font-size: 13px;';
+
+  titleArea.appendChild(indicator);
+  titleArea.appendChild(title);
+
+  const collapseBtn = document.createElement('span');
+  collapseBtn.id = 'gm-collapse-btn';
+  collapseBtn.textContent = panelCollapsed ? '▲' : '▼';
+  collapseBtn.style.cssText = 'font-size: 12px;';
+
+  header.appendChild(titleArea);
+  header.appendChild(collapseBtn);
+
+  header.addEventListener('click', () => {
+    panelCollapsed = !panelCollapsed;
+    const container = document.getElementById('gm-captions-container');
+    const btn = document.getElementById('gm-collapse-btn');
+    if (container) container.style.display = panelCollapsed ? 'none' : 'block';
+    if (btn) btn.textContent = panelCollapsed ? '▲' : '▼';
+    chrome.storage.local.set({ panelCollapsed });
+  });
+
+  // 字幕コンテナ
+  const captionsContainer = document.createElement('div');
+  captionsContainer.id = 'gm-captions-container';
+  captionsContainer.style.cssText = `
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 10px;
+    user-select: text;
+    display: ${panelCollapsed ? 'none' : 'block'};
+  `;
+
+  panel.appendChild(header);
+  panel.appendChild(captionsContainer);
+  document.body.appendChild(panel);
+  panelCreated = true;
 }
 
-// 字幕要素を更新
-function updateCaptionElement(id, text, timestamp) {
-  const element = captionElements[id];
-  if (!element) return;
-
-  // テキスト部分を更新
-  const textElement = element.querySelector('.gm-caption-text');
-  if (textElement) {
-    textElement.textContent = text;
-    currentSentence = text;
-  }
-}
-
-// 新しい字幕要素を作成
-function createCaptionElement(id, text, speaker, timestamp) {
-  // コンテナを取得
+// --- パネルに字幕を追加 ---
+function addCaptionToPanel(cap) {
   const container = document.getElementById('gm-captions-container');
-  if (!container) {
-    console.error('字幕コンテナが見つかりません');
-    return;
+  if (!container) return;
+
+  const item = document.createElement('div');
+  item.style.cssText = 'margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dotted #444;';
+
+  const time = document.createElement('div');
+  time.textContent = `[${cap.time}]`;
+  time.style.cssText = 'color: #aaa; font-size: 12px; margin-bottom: 2px;';
+  item.appendChild(time);
+
+  const content = document.createElement('div');
+  if (cap.speaker) {
+    const speakerSpan = document.createElement('span');
+    speakerSpan.textContent = cap.speaker + ': ';
+    speakerSpan.style.cssText = 'font-weight: bold; color: #4285f4;';
+    content.appendChild(speakerSpan);
   }
+  const textSpan = document.createElement('span');
+  textSpan.textContent = cap.text;
+  content.appendChild(textSpan);
+  item.appendChild(content);
 
-  // 新しい字幕要素を作成
-  const captionElement = document.createElement('div');
-  captionElement.className = 'gm-caption-item';
-  captionElement.dataset.id = id;
-  captionElement.style = `
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px dotted #444;
-  `;
+  container.appendChild(item);
+  container.scrollTop = container.scrollHeight;
+}
 
-  // タイムスタンプ要素
-  const timestampElement = document.createElement('div');
-  timestampElement.className = 'gm-caption-timestamp';
-  timestampElement.textContent = `[${timestamp}]`;
-  timestampElement.style = `
-    color: #aaa;
-    font-size: 12px;
-    margin-bottom: 3px;
-  `;
-  captionElement.appendChild(timestampElement);
-
-  // 発言者要素（存在する場合）
-  if (speaker) {
-    const speakerElement = document.createElement('span');
-    speakerElement.className = 'gm-caption-speaker';
-    speakerElement.textContent = speaker + ': ';
-    speakerElement.style = `
-      font-weight: bold;
-      color: #4285f4;
-    `;
-
-    // テキスト要素
-    const textElement = document.createElement('span');
-    textElement.className = 'gm-caption-text';
-    textElement.textContent = text;
-
-    // 内容要素
-    const contentElement = document.createElement('div');
-    contentElement.className = 'gm-caption-content';
-    contentElement.appendChild(speakerElement);
-    contentElement.appendChild(textElement);
-
-    captionElement.appendChild(contentElement);
+// --- 録音インジケーター更新 ---
+function updateRecordingIndicator(isRecording) {
+  const indicator = document.getElementById('gm-record-indicator');
+  if (!indicator) return;
+  if (isRecording) {
+    indicator.style.background = '#4caf50';
+    indicator.style.animation = 'gm-pulse 1.5s infinite';
   } else {
-    // 発言者がない場合は直接テキストを追加
-    const textElement = document.createElement('div');
-    textElement.className = 'gm-caption-text';
-    textElement.textContent = text;
-    captionElement.appendChild(textElement);
+    indicator.style.background = '#666';
+    indicator.style.animation = 'none';
   }
+}
 
-  // コンテナに追加
-  container.appendChild(captionElement);
-
-  // 要素を保存
-  captionElements[id] = captionElement;
-
-  // 自動的に下部にスクロール
+// --- パネル表示切り替え ---
+function updatePanelVisibility() {
   const panel = document.getElementById('gm-caption-panel');
-  if (panel) {
-    panel.scrollTop = panel.scrollHeight;
-  }
+  if (panel) panel.style.display = captionVisible ? 'block' : 'none';
 }
 
-// 最終的な字幕を保存
-function saveFinalCaption(text, speaker, timestamp) {
-  // 保存用のテキスト
-  const captionText = `[${timestamp}] ${speaker ? speaker + ': ' : ''}${text}`;
-
-  // 保存領域に追加
-  capturedCaptions.push(captionText);
-  console.log('字幕を保存しました:', captionText);
-}
-
-// 字幕をテキストファイルとしてエクスポート
+// --- エクスポート ---
 function exportCaptions() {
-  if (capturedCaptions.length === 0) {
-    alert('まだ字幕が捕捉されていません');
-    return;
-  }
+  if (capturedCaptions.length === 0) return;
 
-  const content = capturedCaptions.join('\n');
-  const blob = new Blob([content], { type: 'text/plain' });
+  const lines = capturedCaptions.map(cap =>
+    `[${cap.time}] ${cap.speaker ? cap.speaker + ': ' : ''}${cap.text}`
+  );
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
 
   const a = document.createElement('a');
@@ -438,32 +306,36 @@ function exportCaptions() {
   a.download = `Google_Meet_Captions_${Date.now()}.txt`;
   a.click();
 
-  // クリーンアップ
   setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
-// メッセージリスナーを設定
+// --- メッセージリスナー ---
 function setupMessageListener() {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'export_captions') {
-      // 現在処理中の文章があれば、それも保存
-      if (currentSentence) {
-        saveFinalCaption(currentSentence, lastSpeaker, lastTimestamp || new Date().toLocaleTimeString());
+      if (currentCaption.text) {
+        capturedCaptions.push({ ...currentCaption });
+        addCaptionToPanel(currentCaption);
+        currentCaption = {};
       }
-
       exportCaptions();
       sendResponse({ success: true });
-    }
-    else if (request.action === 'toggle_caption_visibility') {
+    } else if (request.action === 'toggle_caption_visibility') {
       captionVisible = request.visible;
       updatePanelVisibility();
+      chrome.storage.local.set({ captionVisible });
       sendResponse({ success: true });
-
-      // 状態を保存
-      chrome.storage.local.set({ captionVisible: captionVisible });
     }
   });
 }
 
-// プラグインを起動
+// --- ユーティリティ ---
+function formatTime() {
+  const now = new Date();
+  return [now.getHours(), now.getMinutes(), now.getSeconds()]
+    .map(n => String(n).padStart(2, '0'))
+    .join(':');
+}
+
+// --- 起動 ---
 init();
